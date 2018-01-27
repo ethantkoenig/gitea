@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"code.gitea.io/git"
-	"code.gitea.io/gitea/models"
 	"code.gitea.io/gitea/modules/setting"
 	api "code.gitea.io/sdk/gitea"
 
@@ -59,10 +58,12 @@ func TestGit(t *testing.T) {
 		u.Path = "user2/repo1.git"
 
 		t.Run("HTTP", func(t *testing.T) {
+			fmt.Printf("Test: HTTP\n")
 			dstPath, err := ioutil.TempDir("", "repo-tmp-17")
 			assert.NoError(t, err)
 			defer os.RemoveAll(dstPath)
 			t.Run("Standard", func(t *testing.T) {
+				fmt.Printf("Test: HTTP.Standard\n")
 				t.Run("CloneNoLogin", func(t *testing.T) {
 					dstLocalPath, err := ioutil.TempDir("", "repo1")
 					assert.NoError(t, err)
@@ -104,6 +105,7 @@ func TestGit(t *testing.T) {
 				})
 			})
 			t.Run("LFS", func(t *testing.T) {
+				fmt.Printf("Test: HTTP.LFS\n")
 				t.Run("PushCommit", func(t *testing.T) {
 					//Setup git LFS
 					_, err = git.NewCommand("lfs").AddArguments("install").RunInDir(dstPath)
@@ -125,102 +127,6 @@ func TestGit(t *testing.T) {
 				})
 			})
 		})
-		t.Run("SSH", func(t *testing.T) {
-			//Setup remote link
-			u.Scheme = "ssh"
-			u.User = url.User("git")
-			u.Host = fmt.Sprintf("%s:%d", setting.SSH.ListenHost, setting.SSH.ListenPort)
-			u.Path = "user2/repo-tmp-18.git"
-
-			//Setup key
-			keyFile := filepath.Join(setting.AppDataPath, "my-testing-key")
-			_, _, err := com.ExecCmd("ssh-keygen", "-f", keyFile, "-t", "rsa", "-N", "")
-			assert.NoError(t, err)
-			defer os.RemoveAll(keyFile)
-			defer os.RemoveAll(keyFile + ".pub")
-
-			session := loginUser(t, "user1")
-			keyOwner := models.AssertExistsAndLoadBean(t, &models.User{Name: "user2"}).(*models.User)
-			urlStr := fmt.Sprintf("/api/v1/admin/users/%s/keys", keyOwner.Name)
-
-			dataPubKey, err := ioutil.ReadFile(keyFile + ".pub")
-			assert.NoError(t, err)
-			req := NewRequestWithValues(t, "POST", urlStr, map[string]string{
-				"key":   string(dataPubKey),
-				"title": "test-key",
-			})
-			session.MakeRequest(t, req, http.StatusCreated)
-
-			//Setup ssh wrapper
-			sshWrapper, err := ioutil.TempFile(setting.AppDataPath, "tmp-ssh-wrapper")
-			sshWrapper.WriteString("#!/bin/sh\n\n")
-			sshWrapper.WriteString("ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -i \"" + filepath.Join(setting.AppWorkPath, keyFile) + "\" $* \n\n")
-			err = sshWrapper.Chmod(os.ModePerm)
-			assert.NoError(t, err)
-			sshWrapper.Close()
-			defer os.RemoveAll(sshWrapper.Name())
-
-			//Setup clone folder
-			dstPath, err := ioutil.TempDir("", "repo-tmp-18")
-			assert.NoError(t, err)
-			defer os.RemoveAll(dstPath)
-
-			t.Run("Standard", func(t *testing.T) {
-				t.Run("CreateRepo", func(t *testing.T) {
-					session := loginUser(t, "user2")
-					req := NewRequestWithJSON(t, "POST", "/api/v1/user/repos", &api.CreateRepoOption{
-						AutoInit:    true,
-						Description: "Temporary repo",
-						Name:        "repo-tmp-18",
-						Private:     false,
-						Gitignores:  "",
-						License:     "WTFPL",
-						Readme:      "Default",
-					})
-					session.MakeRequest(t, req, http.StatusCreated)
-				})
-				//TODO get url from api
-				t.Run("Clone", func(t *testing.T) {
-					_, err = git.NewCommand("clone").AddArguments("--config", "core.sshCommand="+filepath.Join(setting.AppWorkPath, sshWrapper.Name()), u.String(), dstPath).Run()
-					assert.NoError(t, err)
-					assert.True(t, com.IsExist(filepath.Join(dstPath, "README.md")))
-				})
-				//time.Sleep(5 * time.Minute)
-				t.Run("PushCommit", func(t *testing.T) {
-					t.Run("Little", func(t *testing.T) {
-						commitAndPush(t, littleSize, dstPath)
-					})
-					t.Run("Big", func(t *testing.T) {
-						commitAndPush(t, bigSize, dstPath)
-					})
-				})
-			})
-			t.Run("LFS", func(t *testing.T) {
-				os.Setenv("GIT_SSH_COMMAND", filepath.Join(setting.AppWorkPath, sshWrapper.Name())) //TODO remove when fixed https://github.com/git-lfs/git-lfs/issues/2215
-				defer os.Unsetenv("GIT_SSH_COMMAND")
-				t.Run("PushCommit", func(t *testing.T) {
-					//Setup git LFS
-					_, err = git.NewCommand("lfs").AddArguments("install").RunInDir(dstPath)
-					assert.NoError(t, err)
-					_, err = git.NewCommand("lfs").AddArguments("track", "data-file-*").RunInDir(dstPath)
-					assert.NoError(t, err)
-					err = git.AddChanges(dstPath, false, ".gitattributes")
-					assert.NoError(t, err)
-
-					t.Run("Little", func(t *testing.T) {
-						commitAndPush(t, littleSize, dstPath)
-					})
-					t.Run("Big", func(t *testing.T) {
-						commitAndPush(t, bigSize, dstPath)
-					})
-				})
-				/* Failed without #3152. TODO activate with fix.
-				t.Run("Locks", func(t *testing.T) {
-				  lockTest(t, u.String(), dstPath)
-				})
-				*/
-			})
-		})
 	})
 }
 
@@ -238,9 +144,12 @@ func lockTest(t *testing.T, remote, repoPath string) {
 }
 
 func commitAndPush(t *testing.T, size int, repoPath string) {
+	fmt.Printf("commitAndPush(%s): starting\n", repoPath)
 	err := generateCommitWithNewData(size, repoPath, "user2@example.com", "User Two")
 	assert.NoError(t, err)
+	fmt.Printf("commitAndPush(%s): about to push\n", repoPath)
 	_, err = git.NewCommand("push").RunInDir(repoPath) //Push
+	fmt.Printf("commitAndPush(%s): done pushing\n", repoPath)
 	assert.NoError(t, err)
 }
 
